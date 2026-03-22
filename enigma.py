@@ -57,68 +57,43 @@ class EnigmaDecrypt(Environment):
     async def get_prompt(self) -> List[TextBlock]:
         task = self.task
         revealed = task["revealed_info"]
-        difficulty = task["difficulty"]
 
         lines = []
-        lines.append("You are a WWII Bletchley Park codebreaker. Your mission is to decrypt an intercepted German military message that was encrypted using a Wehrmacht Enigma I machine.")
+
+        # The ciphertext
+        lines.append("Decrypt this Enigma I ciphertext:")
         lines.append("")
-        lines.append(f"## Intercepted Message")
-        lines.append(f"**Classification:** {task['category']} message")
-        lines.append(f"**Intelligence context:** {task['context']}")
-        lines.append(f"**Difficulty:** {difficulty.upper()}")
-        lines.append(f"**Message length:** {len(task['plaintext'])} characters")
-        lines.append("")
-        lines.append(f"**Ciphertext:**")
-        lines.append(f"```")
         lines.append(task["ciphertext_grouped"])
-        lines.append(f"```")
         lines.append("")
 
-        # Revealed machine settings
-        lines.append("## Known Machine Settings")
+        # Known settings
+        lines.append("Known settings:")
         if "rotor_order" in revealed:
-            lines.append(f"- **Rotor order (left to right):** {' '.join(revealed['rotor_order'])}")
+            lines.append(f"  Walzenlage (rotor order, left to right): {' '.join(revealed['rotor_order'])}")
         if "ring_settings" in revealed:
             ring_letters = [ALPHABET[r - 1] for r in revealed["ring_settings"]]
-            lines.append(f"- **Ring settings:** {revealed['ring_settings']} ({' '.join(ring_letters)})")
+            lines.append(f"  Ringstellung (ring settings): {' '.join(ring_letters)} ({', '.join(str(r) for r in revealed['ring_settings'])})")
         if "reflector" in revealed:
-            lines.append(f"- **Reflector:** {revealed['reflector']}")
+            lines.append(f"  Umkehrwalze (reflector): {revealed['reflector']}")
         if "plugboard" in revealed:
             pairs = [f"{p[0]}/{p[1]}" for p in revealed["plugboard"]]
-            lines.append(f"- **Plugboard:** {', '.join(pairs)}")
+            lines.append(f"  Steckerverbindungen (plugboard): {' '.join(pairs)}")
         if "num_plugboard_pairs" in revealed:
-            lines.append(f"- **Number of plugboard pairs:** {revealed['num_plugboard_pairs']}")
-
-        lines.append(f"- **Unknown settings:** {', '.join(revealed['hidden'])}")
+            lines.append(f"  Number of Stecker pairs: {revealed['num_plugboard_pairs']}")
+        lines.append(f"  Unknown: {', '.join(revealed['hidden'])}")
         lines.append("")
 
         # Cribs
         if task["cribs"]:
-            lines.append("## Known Plaintext (Cribs)")
-            lines.append("Intelligence has identified the following plaintext fragments at known positions:")
+            lines.append("Cribs:")
             for i, crib in enumerate(task["cribs"], 1):
                 lines.append(f"  {i}. \"{crib['text']}\" at position {crib['position']}")
             lines.append("")
 
-        # Enigma properties reference
-        lines.append("## Enigma Machine Properties")
-        lines.append("- The Enigma is reciprocal: encrypting ciphertext with the correct settings produces the plaintext.")
-        lines.append("- **No self-encryption:** A letter never encrypts to itself. Use this to eliminate impossible configurations.")
-        lines.append("- **Rotors available:** I, II, III, IV, V (select any 3, no duplicates)")
-        lines.append("- **Reflectors available:** UKW-A, UKW-B, UKW-C")
-        lines.append("- Ring settings and initial positions are 1-indexed (1=A, 2=B, ..., 26=Z)")
-        lines.append("- Plugboard pairs swap two letters before and after rotor processing")
+        # Minimal reference
+        lines.append("Enigma properties: reciprocal (decryption = encryption with same settings), no letter encrypts to itself. Rotors: I-V (pick 3, no duplicates). Reflectors: UKW-A, UKW-B, UKW-C. Settings are 1-indexed (1=A ... 26=Z).")
         lines.append("")
-
-        # Instructions
-        lines.append("## Instructions")
-        lines.append("1. Use `try_decrypt` to test different machine configurations and observe the output.")
-        lines.append("2. Look for German language patterns in the decrypted output to identify correct settings.")
-        lines.append("3. Use the cribs to verify — if your decryption matches the known plaintext at the given positions, you likely have the right settings.")
-        lines.append("4. Once you have the correct decryption, use `submit` to submit the plaintext.")
-        lines.append(f"5. You have a maximum of {self.max_attempts} decryption attempts.")
-        lines.append("")
-        lines.append("**Scoring:** Character-level accuracy (matching characters / total characters). A perfect decryption scores 1.0.")
+        lines.append(f"Use try_decrypt to test configurations ({self.max_attempts} attempts max). Use submit with the recovered plaintext.")
 
         return [TextBlock(text="\n".join(lines))]
 
