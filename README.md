@@ -22,7 +22,7 @@ Enigma Decrypt does not require a sandbox. The environment runs a pure-Python En
 
 ## License
 
-[ORLv1](https://openreward.ai/orlv1.md).
+MIT
 
 ## Tasks
 
