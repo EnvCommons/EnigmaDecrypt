@@ -15,6 +15,11 @@ from enigma_machine import EnigmaMachine, ROTORS, REFLECTORS, ALPHABET
 from tasks import ALL_TASKS, ALL_SPLITS
 
 
+# Reward for a submission made after the task has already been graded. Negative
+# so repeat submissions are actively discouraged, not merely left unscored.
+REPEAT_SUBMISSION_PENALTY = -0.1
+
+
 class TaskSpec(BaseModel):
     id: str
 
@@ -53,6 +58,15 @@ class EnigmaDecrypt(Environment):
         self.task = ALL_TASKS[self.validated.id]
         self.attempts = 0
         self.max_attempts = 500
+
+        # Scored submissions this session. submit() reports character-level
+        # accuracy against the hidden plaintext ("35/81 characters correct"),
+        # which is a per-character oracle: change one letter, resubmit, and the
+        # count says whether that letter was right. Uncapped, the plaintext is
+        # recoverable letter by letter without ever breaking the cipher. The
+        # try_decrypt exploration tool is unaffected -- it never compares against
+        # the plaintext and keeps its own 500-attempt budget.
+        self.submitted = 0
 
     async def get_prompt(self) -> List[TextBlock]:
         task = self.task
@@ -257,6 +271,16 @@ class EnigmaDecrypt(Environment):
         Submit your final decrypted plaintext for scoring.
         The score is based on character-level accuracy compared to the true plaintext.
         """
+        if self.submitted > 0:
+            return ToolOutput(
+                blocks=[TextBlock(text="A plaintext has already been submitted for this task. "
+                                       "This episode is over: it is not re-scored, and repeat "
+                                       "submissions are penalised (reward -0.1).")],
+                metadata={"already_submitted": True, "submission_count": self.submitted},
+                reward=REPEAT_SUBMISSION_PENALTY,
+                finished=True,
+            )
+
         # Normalize: uppercase, keep only A-Z
         submitted = "".join(c for c in params.plaintext.upper() if c in ALPHABET)
         ground_truth = self.task["plaintext"]
@@ -271,6 +295,8 @@ class EnigmaDecrypt(Environment):
                 1 for a, b in zip(submitted, ground_truth) if a == b
             )
             reward = correct_count / max_len
+
+        self.submitted += 1
 
         return ToolOutput(
             metadata={
