@@ -57,15 +57,21 @@ class EnigmaDecrypt(Environment):
 
         self.task = ALL_TASKS[self.validated.id]
         self.attempts = 0
-        self.max_attempts = 500
+        self.max_attempts = 100
+
+        # Most accurate try_decrypt output so far, as (accuracy, correct_chars,
+        # total_chars). Kept server-side only: it becomes the reward when the
+        # attempt budget runs out before a submit, and is never shown on a
+        # non-terminal attempt (that would be an accuracy oracle).
+        self.best_attempt = (0.0, 0, len(self.task["plaintext"]))
 
         # Scored submissions this session. submit() reports character-level
         # accuracy against the hidden plaintext ("35/81 characters correct"),
         # which is a per-character oracle: change one letter, resubmit, and the
         # count says whether that letter was right. Uncapped, the plaintext is
         # recoverable letter by letter without ever breaking the cipher. The
-        # try_decrypt exploration tool is unaffected -- it never compares against
-        # the plaintext and keeps its own 500-attempt budget.
+        # try_decrypt exploration tool never reports accuracy and keeps its own
+        # attempt budget.
         self.submitted = 0
 
     async def get_prompt(self) -> List[TextBlock]:
@@ -107,7 +113,10 @@ class EnigmaDecrypt(Environment):
         # Minimal reference
         lines.append("Enigma properties: reciprocal (decryption = encryption with same settings), no letter encrypts to itself. Rotors: I-V (pick 3, no duplicates). Reflectors: UKW-A, UKW-B, UKW-C. Settings are 1-indexed (1=A ... 26=Z).")
         lines.append("")
-        lines.append(f"Use try_decrypt to test configurations ({self.max_attempts} attempts max). Use submit with the recovered plaintext.")
+        lines.append(
+            f"Use try_decrypt to test configurations ({self.max_attempts} attempts max). Use submit with the recovered plaintext. "
+            f"If you use all {self.max_attempts} attempts without submitting, the episode ends and is scored on the most accurate decryption among your attempts."
+        )
 
         return [TextBlock(text="\n".join(lines))]
 
@@ -117,6 +126,8 @@ class EnigmaDecrypt(Environment):
         Configure an Enigma machine with the given settings and decrypt the intercepted ciphertext.
         Returns the decrypted text so you can check if it looks like valid German plaintext.
         Use the known cribs to verify if the output matches at expected positions.
+        The budget is 100 attempts: the call that uses the last one ends the episode,
+        scored on the most accurate decryption among all your attempts.
         """
         # Check attempt limit
         if self.attempts >= self.max_attempts:
@@ -232,7 +243,6 @@ class EnigmaDecrypt(Environment):
             plugboard_tuples.append((a, b))
 
         # Attempt decryption
-        self.attempts += 1
         try:
             machine = EnigmaMachine(
                 rotor_order=params.rotor_order,
@@ -250,17 +260,43 @@ class EnigmaDecrypt(Environment):
                 finished=False,
             )
 
+        self.attempts += 1
+        correct, total = self._char_accuracy(decrypted)
+        accuracy = correct / total if total else 0.0
+        if accuracy > self.best_attempt[0]:
+            self.best_attempt = (accuracy, correct, total)
+
         # Format output
         decrypted_grouped = " ".join(
             decrypted[i:i + 5] for i in range(0, len(decrypted), 5)
         )
+        text = f"Attempt {self.attempts}/{self.max_attempts}\n\nDecrypted text:\n{decrypted_grouped}"
+
+        if self.attempts >= self.max_attempts:
+            best_accuracy, best_correct, best_total = self.best_attempt
+            return ToolOutput(
+                metadata={
+                    "attempt": self.attempts,
+                    "decrypted_text": decrypted,
+                    "reward": best_accuracy,
+                    "correct_chars": best_correct,
+                    "total_chars": best_total,
+                    "attempts_used": self.attempts,
+                },
+                blocks=[TextBlock(
+                    text=f"{text}\n\nAttempt budget used up — episode finished; scored your best decryption attempt: "
+                         f"{best_accuracy:.2%} ({best_correct}/{best_total} characters correct)."
+                )],
+                reward=best_accuracy,
+                finished=True,
+            )
 
         return ToolOutput(
             metadata={
                 "attempt": self.attempts,
                 "decrypted_text": decrypted,
             },
-            blocks=[TextBlock(text=f"Attempt {self.attempts}/{self.max_attempts}\n\nDecrypted text:\n{decrypted_grouped}")],
+            blocks=[TextBlock(text=text)],
             reward=0.0,
             finished=False,
         )
@@ -286,15 +322,8 @@ class EnigmaDecrypt(Environment):
         ground_truth = self.task["plaintext"]
 
         # Calculate character-level accuracy
-        max_len = max(len(ground_truth), len(submitted))
-        if max_len == 0:
-            reward = 0.0
-            correct_count = 0
-        else:
-            correct_count = sum(
-                1 for a, b in zip(submitted, ground_truth) if a == b
-            )
-            reward = correct_count / max_len
+        correct_count, max_len = self._char_accuracy(submitted)
+        reward = correct_count / max_len if max_len else 0.0
 
         self.submitted += 1
 
@@ -314,6 +343,14 @@ class EnigmaDecrypt(Environment):
             reward=reward,
             finished=True,
         )
+
+    def _char_accuracy(self, text: str) -> tuple[int, int]:
+        """(correct, total) characters of normalised A-Z text against the hidden
+        plaintext, position by position; total is the longer of the two lengths."""
+        ground_truth = self.task["plaintext"]
+        max_len = max(len(ground_truth), len(text))
+        correct_count = sum(1 for a, b in zip(text, ground_truth) if a == b)
+        return correct_count, max_len
 
     @classmethod
     def list_tasks(cls, split: str) -> list[JSONObject]:

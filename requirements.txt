@@ -1,2 +1,2 @@
 pydantic>=2.0
-openreward
+openreward>=0.1.160

@@ -47,7 +47,7 @@ This is a verifiable reward environment. No LLM grader is used. The reward is de
 
 $$\text{reward} = \frac{\text{matching characters}}{\max(\text{length of ground truth}, \text{length of submission})}$$
 
-A perfect decryption scores 1.0. Partial credit is awarded for partially correct submissions. The reward is computed once when the agent calls `submit`.
+A perfect decryption scores 1.0. Partial credit is awarded for partially correct submissions. The reward is computed once when the agent calls `submit`. If the agent uses its whole `try_decrypt` budget without submitting, the call that uses the last attempt ends the episode and the reward is the accuracy (same formula) of the most accurate decryption among its attempts. Non-terminal `try_decrypt` calls never report accuracy.
 
 ## Data
 
@@ -57,10 +57,10 @@ Tasks are generated from a corpus of 60 realistic WWII-style German military mes
 
 | Tool | Parameters | Description |
 |------|-----------|-------------|
-| `try_decrypt` | `rotor_order`, `ring_settings`, `initial_positions`, `reflector`, `plugboard` | Configure an Enigma machine and decrypt the ciphertext. Returns the decrypted text for inspection. Does not score or finish the task. |
+| `try_decrypt` | `rotor_order`, `ring_settings`, `initial_positions`, `reflector`, `plugboard` | Configure an Enigma machine and decrypt the ciphertext. Returns the decrypted text for inspection. Does not score or finish the task, except for the call that uses the last attempt (see below). |
 | `submit` | `plaintext` | Submit the final decrypted plaintext for scoring. Finishes the task and returns the accuracy reward. |
 
-The agent has a maximum of 500 `try_decrypt` attempts per task.
+The agent has a maximum of 100 `try_decrypt` attempts per task. Using the last attempt finishes the episode, scored on the best attempt.
 
 ## Time Horizon
 
