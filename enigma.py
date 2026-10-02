@@ -6,6 +6,8 @@ messages. Agents use tools to test Enigma machine configurations and submit
 decrypted plaintext for character-level accuracy scoring.
 """
 
+import math
+from collections import Counter
 from typing import List
 
 from pydantic import BaseModel
@@ -18,6 +20,23 @@ from tasks import ALL_TASKS, ALL_SPLITS
 # Reward for a submission made after the task has already been graded. Negative
 # so repeat submissions are actively discouraged, not merely left unscored.
 REPEAT_SUBMISSION_PENALTY = -0.1
+
+# Chance that a wrong-key decryption matches the plaintext at one position.
+# Enigma never encrypts a letter to itself, so neither the plaintext letter nor
+# a wrong-key output letter equals the ciphertext letter: 25 candidates remain.
+RANDOM_MATCH_P = 1 / 25
+
+
+def expected_best_random_accuracy(n: int, attempts: int, p: float = RANDOM_MATCH_P) -> float:
+    """Expected accuracy of the best of `attempts` decryptions of `n` scored
+    characters when each character matches independently with probability p:
+    E[max of `attempts` iid Binomial(n, p)] / n, computed exactly as
+    sum_k P(max > k) = sum_k (1 - F(k)^attempts) with F the Binomial CDF."""
+    cdf, expected_max = 0.0, 0.0
+    for k in range(n):
+        cdf += math.comb(n, k) * p ** k * (1 - p) ** (n - k)
+        expected_max += 1.0 - min(cdf, 1.0) ** attempts
+    return expected_max / n
 
 
 class TaskSpec(BaseModel):
@@ -59,11 +78,29 @@ class EnigmaDecrypt(Environment):
         self.attempts = 0
         self.max_attempts = 100
 
+        # Scoring ignores the crib positions (their letters are given in the
+        # prompt) and is chance-corrected: accuracy at or below what is reachable
+        # without decrypting scores 0, a perfect decryption scores 1. That level
+        # is the higher of (a) filling every position with the commonest
+        # plaintext letter and (b) the expected best of a full budget of random
+        # decryptions. Both terminal paths (submit and the budget auto-finish)
+        # use the same scale, so neither offers a no-skill floor.
+        plaintext = self.task["plaintext"]
+        crib_positions = {
+            crib["position"] + j for crib in self.task["cribs"] for j in range(len(crib["text"]))
+        }
+        self.scored_positions = [i for i in range(len(plaintext)) if i not in crib_positions]
+        n_scored = len(self.scored_positions)
+        commonest_letter_rate = max(Counter(plaintext[i] for i in self.scored_positions).values()) / n_scored
+        self.chance_accuracy = max(
+            commonest_letter_rate, expected_best_random_accuracy(n_scored, self.max_attempts)
+        )
+
         # Most accurate try_decrypt output so far, as (accuracy, correct_chars,
         # total_chars). Kept server-side only: it becomes the reward when the
         # attempt budget runs out before a submit, and is never shown on a
         # non-terminal attempt (that would be an accuracy oracle).
-        self.best_attempt = (0.0, 0, len(self.task["plaintext"]))
+        self.best_attempt = (0.0, 0, n_scored)
 
         # Scored submissions this session. submit() reports character-level
         # accuracy against the hidden plaintext ("35/81 characters correct"),
@@ -116,6 +153,11 @@ class EnigmaDecrypt(Environment):
         lines.append(
             f"Use try_decrypt to test configurations ({self.max_attempts} attempts max). Use submit with the recovered plaintext. "
             f"If you use all {self.max_attempts} attempts without submitting, the episode ends and is scored on the most accurate decryption among your attempts."
+        )
+        lines.append(
+            "Scoring: character accuracy over the positions not covered by cribs, chance-corrected. "
+            "Accuracy no better than guessing without decrypting (the commonest letter everywhere, "
+            f"or the best of {self.max_attempts} random decryptions) scores 0; a perfect decryption scores 1."
         )
 
         return [TextBlock(text="\n".join(lines))]
@@ -274,20 +316,23 @@ class EnigmaDecrypt(Environment):
 
         if self.attempts >= self.max_attempts:
             best_accuracy, best_correct, best_total = self.best_attempt
+            reward = self._reward(best_accuracy)
             return ToolOutput(
                 metadata={
                     "attempt": self.attempts,
                     "decrypted_text": decrypted,
-                    "reward": best_accuracy,
+                    "reward": reward,
+                    "accuracy": best_accuracy,
                     "correct_chars": best_correct,
                     "total_chars": best_total,
                     "attempts_used": self.attempts,
                 },
                 blocks=[TextBlock(
                     text=f"{text}\n\nAttempt budget used up — episode finished; scored your best decryption attempt: "
-                         f"{best_accuracy:.2%} ({best_correct}/{best_total} characters correct)."
+                         f"accuracy {best_accuracy:.2%} ({best_correct}/{best_total} non-crib characters correct), "
+                         f"chance-corrected reward {reward:.3f}."
                 )],
-                reward=best_accuracy,
+                reward=reward,
                 finished=True,
             )
 
@@ -305,7 +350,8 @@ class EnigmaDecrypt(Environment):
     async def submit(self, params: SubmitInput) -> ToolOutput:
         """
         Submit your final decrypted plaintext for scoring.
-        The score is based on character-level accuracy compared to the true plaintext.
+        The score is chance-corrected character accuracy against the true plaintext,
+        over the positions not covered by cribs.
         """
         if self.submitted > 0:
             return ToolOutput(
@@ -323,13 +369,15 @@ class EnigmaDecrypt(Environment):
 
         # Calculate character-level accuracy
         correct_count, max_len = self._char_accuracy(submitted)
-        reward = correct_count / max_len if max_len else 0.0
+        accuracy = correct_count / max_len
+        reward = self._reward(accuracy)
 
         self.submitted += 1
 
         return ToolOutput(
             metadata={
                 "reward": reward,
+                "accuracy": accuracy,
                 "correct_chars": correct_count,
                 "total_chars": max_len,
                 "submitted_length": len(submitted),
@@ -337,8 +385,8 @@ class EnigmaDecrypt(Environment):
                 "attempts_used": self.attempts,
             },
             blocks=[TextBlock(
-                text=f"Submitted. Accuracy: {reward:.2%} ({correct_count}/{max_len} characters correct). "
-                     f"Attempts used: {self.attempts}."
+                text=f"Submitted. Accuracy: {accuracy:.2%} ({correct_count}/{max_len} non-crib characters correct). "
+                     f"Chance-corrected reward: {reward:.3f}. Attempts used: {self.attempts}."
             )],
             reward=reward,
             finished=True,
@@ -346,11 +394,16 @@ class EnigmaDecrypt(Environment):
 
     def _char_accuracy(self, text: str) -> tuple[int, int]:
         """(correct, total) characters of normalised A-Z text against the hidden
-        plaintext, position by position; total is the longer of the two lengths."""
+        plaintext, position by position, over the non-crib positions; characters
+        beyond the plaintext length count towards total as wrong."""
         ground_truth = self.task["plaintext"]
-        max_len = max(len(ground_truth), len(text))
-        correct_count = sum(1 for a, b in zip(text, ground_truth) if a == b)
-        return correct_count, max_len
+        correct_count = sum(1 for i in self.scored_positions if i < len(text) and text[i] == ground_truth[i])
+        total = len(self.scored_positions) + max(0, len(text) - len(ground_truth))
+        return correct_count, total
+
+    def _reward(self, accuracy: float) -> float:
+        """Chance-corrected accuracy: 0 at or below self.chance_accuracy, 1 when perfect."""
+        return max(0.0, (accuracy - self.chance_accuracy) / (1.0 - self.chance_accuracy))
 
     @classmethod
     def list_tasks(cls, split: str) -> list[JSONObject]:

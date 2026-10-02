@@ -10,11 +10,15 @@ Tests cover:
 
 import pytest
 import asyncio
+import itertools
+import math
+import random
+from collections import Counter
 
 from enigma_machine import EnigmaMachine, ROTORS, REFLECTORS, ALPHABET
 from tasks import ALL_TASKS, ALL_SPLITS, get_task_counts
 from openreward.environments import TextBlock
-from enigma import EnigmaDecrypt, TryDecryptInput, SubmitInput
+from enigma import EnigmaDecrypt, TryDecryptInput, SubmitInput, expected_best_random_accuracy
 
 
 # ============================================================================
@@ -472,6 +476,57 @@ class TestTaskCorpus:
 
 
 # ============================================================================
+# Scoring reference (independent of the environment's implementation)
+# ============================================================================
+
+def _scored_positions(task):
+    cribbed = set()
+    for crib in task["cribs"]:
+        cribbed.update(range(crib["position"], crib["position"] + len(crib["text"])))
+    return [i for i in range(len(task["plaintext"])) if i not in cribbed]
+
+
+def _scored_accuracy(text, task):
+    plaintext = task["plaintext"]
+    positions = _scored_positions(task)
+    correct = sum(1 for i in positions if i < len(text) and text[i] == plaintext[i])
+    return correct / (len(positions) + max(0, len(text) - len(plaintext)))
+
+
+def _chance_accuracy(task):
+    positions = _scored_positions(task)
+    commonest = Counter(task["plaintext"][i] for i in positions).most_common(1)[0][1] / len(positions)
+    return max(commonest, expected_best_random_accuracy(len(positions), 100))
+
+
+def _expected_reward(text, task):
+    chance = _chance_accuracy(task)
+    return max(0.0, (_scored_accuracy(text, task) - chance) / (1 - chance))
+
+
+def _wrong_letters(text):
+    """Each letter replaced by a different one, so no position matches."""
+    return "".join(ALPHABET[(ALPHABET.index(c) + 1) % 26] for c in text)
+
+
+def _random_settings(task, rng):
+    """A uniformly random key consistent with what the prompt reveals."""
+    revealed = task["revealed_info"]
+    if "plugboard" in revealed:
+        plugboard = revealed["plugboard"]
+    else:
+        letters = rng.sample(ALPHABET, 2 * revealed["num_plugboard_pairs"])
+        plugboard = [[letters[2 * i], letters[2 * i + 1]] for i in range(revealed["num_plugboard_pairs"])]
+    return TryDecryptInput(
+        rotor_order=revealed.get("rotor_order") or rng.sample(["I", "II", "III", "IV", "V"], 3),
+        ring_settings=revealed.get("ring_settings") or [rng.randint(1, 26) for _ in range(3)],
+        initial_positions=[rng.randint(1, 26) for _ in range(3)],
+        reflector=revealed["reflector"],
+        plugboard=plugboard,
+    )
+
+
+# ============================================================================
 # 3. ENVIRONMENT TOOL TESTS
 # ============================================================================
 
@@ -692,8 +747,8 @@ class TestEnvironmentTools:
         return TryDecryptInput(**settings)
 
     @staticmethod
-    def _accuracy(text, plaintext):
-        return sum(a == b for a, b in zip(text, plaintext)) / max(len(text), len(plaintext))
+    def _accuracy(text, task):
+        return _scored_accuracy(text, task)
 
     def _budget_inputs(self, task, n):
         """n attempt inputs: one partially correct decryption in the middle
@@ -739,7 +794,7 @@ class TestEnvironmentTools:
         assert last.finished is True
         assert last.metadata["attempt"] == env.max_attempts
 
-        accuracies = [self._accuracy(d, plaintext) for d in decryptions]
+        accuracies = [self._accuracy(d, easy_task) for d in decryptions]
         best = max(accuracies)
         best_text = decryptions[accuracies.index(best)]
         # The best attempt is neither perfect nor the last one, so the reward is
@@ -749,7 +804,9 @@ class TestEnvironmentTools:
 
         fresh = EnigmaDecrypt(task_spec={"id": easy_task_id})
         as_submitted = await fresh.submit(SubmitInput(plaintext=best_text))
-        assert last.reward == as_submitted.reward == best
+        assert best > _chance_accuracy(easy_task)
+        assert last.reward == as_submitted.reward == _expected_reward(best_text, easy_task) > 0.0
+        assert last.metadata["accuracy"] == as_submitted.metadata["accuracy"] == best
         assert last.metadata["correct_chars"] == as_submitted.metadata["correct_chars"]
         assert last.metadata["total_chars"] == as_submitted.metadata["total_chars"]
         assert "plaintext" not in last.metadata
@@ -759,7 +816,8 @@ class TestEnvironmentTools:
         assert grouped in text
         assert "Attempt budget used up" in text
         assert f"{best:.2%}" in text
-        assert f"({as_submitted.metadata['correct_chars']}/{as_submitted.metadata['total_chars']} characters correct)" in text
+        assert f"({as_submitted.metadata['correct_chars']}/{as_submitted.metadata['total_chars']} non-crib characters correct)" in text
+        assert f"reward {last.reward:.3f}" in text
 
     @pytest.mark.asyncio
     async def test_submit_before_budget_scores_submitted_text(self, easy_task_id, easy_task):
@@ -768,10 +826,11 @@ class TestEnvironmentTools:
         for _ in range(3):
             result = await env.try_decrypt(self._settings(easy_task))
             assert result.finished is False
-        wrong = "X" * len(easy_task["plaintext"])
-        final = await env.submit(SubmitInput(plaintext=wrong))
+        plaintext = easy_task["plaintext"]
+        half = plaintext[:len(plaintext) // 2] + _wrong_letters(plaintext[len(plaintext) // 2:])
+        final = await env.submit(SubmitInput(plaintext=half))
         assert final.finished is True
-        assert final.reward == self._accuracy(wrong, easy_task["plaintext"])
+        assert 0.0 < final.reward == _expected_reward(half, easy_task) < 1.0
         assert final.metadata["attempts_used"] == 3
 
     @pytest.mark.asyncio
@@ -789,6 +848,118 @@ class TestEnvironmentTools:
             assert res.root.ok is False
             assert res.root.reason == "episode_finished"
         assert env.attempts == env.max_attempts
+
+
+class TestChanceCorrectedReward:
+    """Both terminal paths score chance-corrected accuracy over non-crib positions:
+    no-skill play (random decryptions, letter-frequency filler, copying the cribs)
+    scores 0, a perfect decryption scores 1, and real progress is rewarded."""
+
+    @pytest.mark.parametrize("n,attempts,p", [(1, 1, 0.3), (3, 2, 0.3), (4, 3, 1 / 25), (5, 2, 0.5)])
+    def test_expected_best_random_accuracy_matches_enumeration(self, n, attempts, p):
+        pmf = [math.comb(n, k) * p ** k * (1 - p) ** (n - k) for k in range(n + 1)]
+        expected_max = sum(
+            math.prod(pmf[k] for k in ks) * max(ks)
+            for ks in itertools.product(range(n + 1), repeat=attempts)
+        )
+        assert expected_best_random_accuracy(n, attempts, p) == pytest.approx(expected_max / n, abs=1e-12)
+
+    def test_expected_best_random_accuracy_grows_with_attempts(self):
+        values = [expected_best_random_accuracy(70, a) for a in (1, 10, 100)]
+        assert values[0] == pytest.approx(1 / 25)
+        assert values[0] < values[1] < values[2] < 0.2
+
+    @pytest.mark.parametrize("task_id", list(ALL_TASKS.keys()))
+    def test_chance_level_leaves_room_for_progress(self, task_id):
+        env = EnigmaDecrypt(task_spec={"id": task_id})
+        assert len(env.scored_positions) > 0
+        assert env.chance_accuracy == pytest.approx(_chance_accuracy(ALL_TASKS[task_id]))
+        assert 0.0 < env.chance_accuracy < 0.3
+
+    @pytest.mark.asyncio
+    async def test_random_decryption_budget_scores_about_zero(self):
+        """Spending all 100 attempts on random keys earns ~0 on every task."""
+        rng = random.Random(1234)
+        rewards = []
+        for task_id, task in ALL_TASKS.items():
+            env = EnigmaDecrypt(task_spec={"id": task_id})
+            for _ in range(env.max_attempts):
+                result = await env.try_decrypt(_random_settings(task, rng))
+            assert result.finished is True
+            assert result.reward < 0.1
+            rewards.append(result.reward)
+        assert sum(rewards) / len(rewards) < 0.01
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("task_id", list(ALL_TASKS.keys()))
+    async def test_submissions_without_decrypting_score_zero(self, task_id):
+        task = ALL_TASKS[task_id]
+        plaintext = task["plaintext"]
+        rng = random.Random(task_id)
+        cribs_only = list(_wrong_letters(plaintext))
+        cribs_with_e = ["E"] * len(plaintext)
+        for crib in task["cribs"]:
+            for j, c in enumerate(crib["text"]):
+                cribs_only[crib["position"] + j] = c
+                cribs_with_e[crib["position"] + j] = c
+        guesses = [
+            "".join(rng.choice(ALPHABET) for _ in plaintext),
+            "E" * len(plaintext),
+            "X" * len(plaintext),
+            "".join(cribs_only),
+            "".join(cribs_with_e),
+        ]
+        for guess in guesses:
+            env = EnigmaDecrypt(task_spec={"id": task_id})
+            result = await env.submit(SubmitInput(plaintext=guess))
+            assert result.finished is True
+            assert result.reward == 0.0, guess
+
+    @pytest.mark.asyncio
+    async def test_perfect_decryption_scores_one_on_both_paths(self):
+        rng = random.Random(7)
+        for task_id, task in list(ALL_TASKS.items())[::10]:
+            env = EnigmaDecrypt(task_spec={"id": task_id})
+            assert (await env.submit(SubmitInput(plaintext=task["plaintext"]))).reward == 1.0
+
+            correct = TryDecryptInput(
+                rotor_order=task["rotor_order"],
+                ring_settings=task["ring_settings"],
+                initial_positions=task["initial_positions"],
+                reflector=task["reflector"],
+                plugboard=task["plugboard"],
+            )
+            env = EnigmaDecrypt(task_spec={"id": task_id})
+            await env.try_decrypt(correct)
+            for _ in range(env.max_attempts - 1):
+                result = await env.try_decrypt(_random_settings(task, rng))
+            assert result.finished is True
+            assert result.reward == 1.0
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("task_id", [tid for tid in ALL_TASKS][::7])
+    async def test_partial_progress_is_monotone(self, task_id):
+        """Reward is 0 up to the chance level, then strictly increases with each
+        additional correct non-crib character, reaching 1 when all are correct."""
+        task = ALL_TASKS[task_id]
+        plaintext = task["plaintext"]
+        positions = _scored_positions(task)
+        chance = _chance_accuracy(task)
+        rewards = []
+        for k in range(len(positions) + 1):
+            text = list(_wrong_letters(plaintext))
+            for i in positions[:k]:
+                text[i] = plaintext[i]
+            env = EnigmaDecrypt(task_spec={"id": task_id})
+            result = await env.submit(SubmitInput(plaintext="".join(text)))
+            assert result.metadata["correct_chars"] == k
+            rewards.append(result.reward)
+        for k, (prev, cur) in enumerate(zip(rewards, rewards[1:]), start=1):
+            if k / len(positions) <= chance:
+                assert cur == 0.0
+            else:
+                assert cur > prev
+        assert rewards[-1] == 1.0
 
 
 # ============================================================================

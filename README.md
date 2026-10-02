@@ -43,11 +43,19 @@ Messages span 5 categories of realistic WWII German military communications: wea
 
 ## Reward Structure
 
-This is a verifiable reward environment. No LLM grader is used. The reward is deterministic character-level accuracy:
+This is a verifiable reward environment. No LLM grader is used. The reward is deterministic, chance-corrected character-level accuracy.
 
-$$\text{reward} = \frac{\text{matching characters}}{\max(\text{length of ground truth}, \text{length of submission})}$$
+Accuracy is computed position by position over the plaintext positions **not** covered by cribs (crib letters are given in the prompt, so they earn nothing):
 
-A perfect decryption scores 1.0. Partial credit is awarded for partially correct submissions. The reward is computed once when the agent calls `submit`. If the agent uses its whole `try_decrypt` budget without submitting, the call that uses the last attempt ends the episode and the reward is the accuracy (same formula) of the most accurate decryption among its attempts. Non-terminal `try_decrypt` calls never report accuracy.
+$$\text{accuracy} = \frac{\text{matching non-crib characters}}{\text{non-crib characters} + \max(0, \text{length of submission} - \text{length of ground truth})}$$
+
+It is then rescaled against the accuracy reachable without decrypting:
+
+$$\text{reward} = \max\left(0, \frac{\text{accuracy} - c}{1 - c}\right), \quad c = \max\left(\text{rate of the commonest plaintext letter},\ \frac{\mathbb{E}[\max_{j \le 100} X_j]}{n}\right), \quad X_j \sim \text{Binomial}(n, 1/25)$$
+
+where $n$ is the number of non-crib characters. The first term is what filling every position with one letter (e.g. all `E`) scores; the second is the expected best of 100 random decryptions (Enigma never encrypts a letter to itself, so a wrong-key output letter matches the plaintext with probability 1/25), computed exactly. Guessing, copying the cribs or spending the attempt budget on random keys scores 0 (or very close to it); a perfect decryption scores 1; above $c$ the reward increases strictly with each additional correct character.
+
+The reward is computed once when the agent calls `submit`. If the agent uses its whole `try_decrypt` budget without submitting, the call that uses the last attempt ends the episode and the reward is the same score for the most accurate decryption among its attempts. Non-terminal `try_decrypt` calls never report accuracy.
 
 ## Data
 
