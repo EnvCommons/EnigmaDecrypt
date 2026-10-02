@@ -667,7 +667,7 @@ class TestEnvironmentTools:
     async def test_attempt_limit(self, easy_task_id, easy_task):
         """Max attempts limit is enforced."""
         env = EnigmaDecrypt(task_spec={"id": easy_task_id})
-        env.attempts = 500  # Set to max
+        env.attempts = env.max_attempts  # Set to max
 
         result = await env.try_decrypt(TryDecryptInput(
             rotor_order=easy_task["rotor_order"],
@@ -678,6 +678,117 @@ class TestEnvironmentTools:
         ))
         assert "error" in result.metadata
         assert "Maximum" in result.blocks[0].text
+
+    @staticmethod
+    def _settings(task, **overrides):
+        settings = dict(
+            rotor_order=task["rotor_order"],
+            ring_settings=task["ring_settings"],
+            initial_positions=task["initial_positions"],
+            reflector=task["reflector"],
+            plugboard=task["plugboard"],
+        )
+        settings.update(overrides)
+        return TryDecryptInput(**settings)
+
+    @staticmethod
+    def _accuracy(text, plaintext):
+        return sum(a == b for a, b in zip(text, plaintext)) / max(len(text), len(plaintext))
+
+    def _budget_inputs(self, task, n):
+        """n attempt inputs: one partially correct decryption in the middle
+        (correct settings minus one plugboard pair), all others wrong settings."""
+        wrong_rotors = [r for r in ["I", "II", "III", "IV", "V"] if r not in task["rotor_order"]][:2]
+        wrong_rotors.append(task["rotor_order"][0])
+        inputs = []
+        for i in range(n):
+            if i == n // 2:
+                inputs.append(self._settings(task, plugboard=task["plugboard"][1:]))
+            else:
+                pos = [(i % 26) + 1, ((i // 26) % 26) + 1, 1]
+                inputs.append(self._settings(task, rotor_order=wrong_rotors, initial_positions=pos))
+        return inputs
+
+    def test_attempt_budget_is_100(self, easy_task_id):
+        env = EnigmaDecrypt(task_spec={"id": easy_task_id})
+        assert env.max_attempts == 100
+
+    @pytest.mark.asyncio
+    async def test_attempt_budget_finishes_with_best_attempt_accuracy(self, easy_task_id, easy_task):
+        """The call that uses the last attempt returns its decryption, finishes the
+        episode, and is rewarded with the best attempt's accuracy as submit would score it."""
+        assert len(easy_task["plugboard"]) >= 2
+        env = EnigmaDecrypt(task_spec={"id": easy_task_id})
+        plaintext = easy_task["plaintext"]
+        inputs = self._budget_inputs(easy_task, env.max_attempts)
+
+        decryptions = []
+        for i, inp in enumerate(inputs[:-1]):
+            result = await env.try_decrypt(inp)
+            assert result.finished is False
+            assert result.reward == 0.0
+            assert set(result.metadata) == {"attempt", "decrypted_text"}
+            assert result.metadata["attempt"] == i + 1
+            assert "%" not in result.blocks[0].text
+            assert "correct" not in result.blocks[0].text.lower()
+            assert "accuracy" not in result.blocks[0].text.lower()
+            decryptions.append(result.metadata["decrypted_text"])
+
+        last = await env.try_decrypt(inputs[-1])
+        decryptions.append(last.metadata["decrypted_text"])
+        assert last.finished is True
+        assert last.metadata["attempt"] == env.max_attempts
+
+        accuracies = [self._accuracy(d, plaintext) for d in decryptions]
+        best = max(accuracies)
+        best_text = decryptions[accuracies.index(best)]
+        # The best attempt is neither perfect nor the last one, so the reward is
+        # not trivially 1.0 or the final attempt's accuracy.
+        assert 0.0 < best < 1.0
+        assert accuracies[-1] < best
+
+        fresh = EnigmaDecrypt(task_spec={"id": easy_task_id})
+        as_submitted = await fresh.submit(SubmitInput(plaintext=best_text))
+        assert last.reward == as_submitted.reward == best
+        assert last.metadata["correct_chars"] == as_submitted.metadata["correct_chars"]
+        assert last.metadata["total_chars"] == as_submitted.metadata["total_chars"]
+        assert "plaintext" not in last.metadata
+
+        text = last.blocks[0].text
+        grouped = " ".join(decryptions[-1][i:i + 5] for i in range(0, len(decryptions[-1]), 5))
+        assert grouped in text
+        assert "Attempt budget used up" in text
+        assert f"{best:.2%}" in text
+        assert f"({as_submitted.metadata['correct_chars']}/{as_submitted.metadata['total_chars']} characters correct)" in text
+
+    @pytest.mark.asyncio
+    async def test_submit_before_budget_scores_submitted_text(self, easy_task_id, easy_task):
+        """An explicit submit scores the submitted text, not the best attempt."""
+        env = EnigmaDecrypt(task_spec={"id": easy_task_id})
+        for _ in range(3):
+            result = await env.try_decrypt(self._settings(easy_task))
+            assert result.finished is False
+        wrong = "X" * len(easy_task["plaintext"])
+        final = await env.submit(SubmitInput(plaintext=wrong))
+        assert final.finished is True
+        assert final.reward == self._accuracy(wrong, easy_task["plaintext"])
+        assert final.metadata["attempts_used"] == 3
+
+    @pytest.mark.asyncio
+    async def test_calls_after_budget_finish_are_refused(self, easy_task_id, easy_task):
+        """Once the last attempt finishes the episode, further tool calls are not run."""
+        env = EnigmaDecrypt(task_spec={"id": easy_task_id})
+        for inp in self._budget_inputs(easy_task, env.max_attempts):
+            res = await env._call_tool("try_decrypt", inp.model_dump())
+            assert res.root.ok is True
+        assert res.root.output.finished is True
+
+        after_decrypt = await env._call_tool("try_decrypt", self._settings(easy_task).model_dump())
+        after_submit = await env._call_tool("submit", {"plaintext": easy_task["plaintext"]})
+        for res in (after_decrypt, after_submit):
+            assert res.root.ok is False
+            assert res.root.reason == "episode_finished"
+        assert env.attempts == env.max_attempts
 
 
 # ============================================================================
@@ -741,6 +852,14 @@ class TestEnvironmentClass:
         prompt = await env.get_prompt()
         # The full plaintext should not appear in the prompt
         assert task["plaintext"] not in prompt[0].text
+
+    @pytest.mark.asyncio
+    async def test_prompt_states_attempt_budget_and_auto_finish(self):
+        """Prompt states the 100-attempt budget and that exhausting it ends the episode."""
+        env = EnigmaDecrypt(task_spec={"id": list(ALL_TASKS.keys())[0]})
+        text = (await env.get_prompt())[0].text
+        assert "(100 attempts max)" in text
+        assert "If you use all 100 attempts without submitting, the episode ends" in text
 
 
 # ============================================================================
