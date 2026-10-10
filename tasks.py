@@ -26,7 +26,9 @@ from enigma_machine import ALPHABET, ROTORS, EnigmaMachine
 
 NAMESPACE = "enigma-v1"
 REFLECTOR = "UKW-B"
-TRAIN_SEEDS = range(0, 2000)
+# Train tasks per level: uniform sampling over the split then gives each level
+# this share of episodes (L1 15%, L2 30%, L3 30%, L4 15%, L5 10%).
+TRAIN_TASKS = {1: 1500, 2: 3000, 3: 3000, 4: 1500, 5: 1000}
 TEST_SEEDS = range(1_000_000, 1_000_100)
 SAMPLE_CHARS = 80_000
 SAMPLE_OVERLAP = 40
@@ -184,5 +186,5 @@ def task_id(level: int, seed: int) -> str:
 
 
 def list_specs(split: str) -> list:
-    seeds = {"train": TRAIN_SEEDS, "test": TEST_SEEDS}[split]
-    return [{"id": task_id(level, s), "level": level, "seed": s} for level in sorted(LEVELS) for s in seeds]
+    seeds = {"train": lambda level: range(TRAIN_TASKS[level]), "test": lambda level: TEST_SEEDS}[split]
+    return [{"id": task_id(level, s), "level": level, "seed": s} for level in sorted(LEVELS) for s in seeds(level)]

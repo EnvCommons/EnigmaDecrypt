@@ -472,7 +472,9 @@ class TestTasks:
 
     def test_list_tasks(self):
         train, test = EnigmaDecrypt.list_tasks("train"), EnigmaDecrypt.list_tasks("test")
-        assert len(train) == 5 * len(tasks.TRAIN_SEEDS) and len(test) == 5 * len(tasks.TEST_SEEDS)
+        assert len(train) == sum(tasks.TRAIN_TASKS.values()) == 10_000 and len(test) == 5 * len(tasks.TEST_SEEDS)
+        counts = collections.Counter(t["level"] for t in train)
+        assert counts == tasks.TRAIN_TASKS and set(counts) == set(tasks.LEVELS)
         assert len({t["id"] for t in train + test}) == len(train) + len(test)
         assert not {t["seed"] for t in train} & {t["seed"] for t in test}
         assert all(set(t) == {"id", "level", "seed"} for t in train + test)
