@@ -1,7 +1,7 @@
 """
 Agent integration test for the Enigma Decrypt environment.
 
-Runs a single easy task using the OpenAI API through OpenReward.
+Runs the first level-1 task using the OpenAI API through OpenReward.
 """
 
 import json
@@ -36,7 +36,7 @@ async def main():
             task_spec=task.task_spec,
         )
 
-        async with environment.session(task=task, secrets={}) as session:
+        async with environment.session(task=task, secrets={"api_key": os.getenv("OPENREWARD_API_KEY")}) as session:
             prompt = await session.get_prompt()
             input_list = [{"role": "user", "content": prompt[0].text}]
             finished = False

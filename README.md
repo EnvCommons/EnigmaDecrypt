@@ -4,21 +4,21 @@
 
 ## Description
 
-Enigma Decrypt is an environment where agents decrypt WWII-era Enigma-encoded German military messages. Each task presents an intercepted ciphertext encrypted with a historically accurate Wehrmacht Enigma I machine (3-rotor, plugboard configuration). The agent is given partial information about the machine settings and known plaintext fragments (cribs), and must deduce the remaining settings to recover the original German military message.
+Enigma Decrypt is an environment for computational cryptanalysis. Each task is an intercepted German military radio message encrypted on a historically accurate Enigma I (three rotors from I-V, reflector UKW-B, plugboard). The agent works in a Python sandbox and must recover the full key with its own code: a known-plaintext (crib) attack at the lower levels, a ciphertext-only statistical attack at the upper ones. It then submits the key.
 
-The Enigma machine simulator is verified against the 1930 German military instruction manual test vector and validated for all fundamental Enigma properties: reciprocity, no self-encryption, and the double-stepping anomaly.
+The Enigma simulator is verified against the 1930 German military instruction manual test vector and for reciprocity, no self-encryption and the double-stepping anomaly.
 
 ## Capabilities
 
-- Cryptanalysis and systematic search over configuration spaces
-- Exploiting mathematical properties of the Enigma cipher (no self-encryption, reciprocity)
-- Known-plaintext attacks using cribs
-- Strategic hypothesis testing and elimination
-- Understanding of rotor machines and substitution ciphers
+- Implementing and optimising a cipher machine simulation (vectorised search over rotor settings)
+- Known-plaintext attacks: menus, loops and bombe-style search from cribs
+- Ciphertext-only attacks: index of coincidence and n-gram scoring, plugboard hill-climbing
+- Using language statistics and recognising partially correct German plaintext
+- Managing long-running computations within time limits
 
 ## Compute Requirements
 
-Enigma Decrypt does not require a sandbox. The environment runs a pure-Python Enigma machine simulator with minimal compute requirements.
+Each session gets a sandbox (2 CPUs, 4 GB RAM, no network) with Python, numpy and scipy (`generalreasoning/python-ds:3.12-tools`). Commands time out after 600 seconds by default and 900 seconds at most. Longer searches run as detached jobs (`setsid -f cmd > log 2>&1 < /dev/null`), which the prompt explains; a plain `cmd &` would block the call until its time limit.
 
 ## License
 
@@ -26,65 +26,58 @@ MIT
 
 ## Tasks
 
-There are 60 tasks across 2 splits and 3 difficulty tiers:
+Tasks are generated procedurally: each task id `L<level>-<seed>` deterministically yields a fresh plaintext, key, ciphertext and (for crib levels) cribs. The train split has seeds 0-1999 for each level (10,000 tasks); the test split has seeds 1,000,000-1,000,099 for each level (500 tasks).
 
-| Split | Easy | Medium | Hard | Total |
-|-------|------|--------|------|-------|
-| train | 15   | 15     | 10   | 40    |
-| test  | 5    | 10     | 5    | 20    |
+| Level | Attack | Known | Message length | Plugboard pairs | Cribs | Sandbox kit |
+|---|---|---|---|---|---|---|
+| 1 | known plaintext | rotor order, reflector | 80-120 | 6 | 1 crib of 14-16 letters whose menu has at least 1 loop; the middle rotor does not step within it | reference simulator, German text sample |
+| 2 | known plaintext | reflector | 100-150 | 10 | 2 cribs of 12-16 letters with at least 3 loops in total; the left rotor does not move between them | reference simulator, German text sample |
+| 3 | known plaintext | reflector | 100-150 | 10 | as level 2 | machine specification only |
+| 4 | ciphertext only | reflector | 400-500 | 5-6 | none; the left rotor does not move during the message | reference simulator, German text sample |
+| 5 | ciphertext only | reflector | 350-450 | 6 | none; the left rotor does not move during the message | machine specification only |
 
-Messages span 5 categories of realistic WWII German military communications: weather reports (WETTER), U-boat reports (UBOOT), operational orders (BEFEHL), status reports (LAGEBERICHT), and miscellaneous intelligence/logistics. Messages follow authentic conventions: uppercase A-Z only, X for periods, ZZ for commas, Q replacing CH, and numbers spelled out in German.
+The number of plugboard pairs is always stated. Ring settings and start positions are always unknown.
 
-### Difficulty Tiers
-
-- **Easy:** Agent knows rotor order, ring settings, reflector, and plugboard. Must find the 3 initial rotor positions (17,576 possibilities). 1-2 cribs provided.
-- **Medium:** Agent knows rotor order and reflector. Must find ring settings, initial positions, and plugboard (3-5 pairs). 2-3 cribs provided.
-- **Hard:** Agent knows only the reflector. Must deduce rotor order (60 permutations), ring settings, initial positions, and plugboard (2-3 pairs). 3-4 cribs provided.
+The sandbox workspace (`/workspace`) holds `ciphertext.txt` and `task.md` (known settings, cribs, plaintext conventions). Levels with a kit add `enigma_reference.py`, a correct but slow simulator with a command-line interface, and `german_sample.txt`, about 80 KB of messages in the same style for language statistics. Levels without a kit include the full machine specification (wirings, turnover letters, stepping rules) and test vectors in `task.md`.
 
 ## Reward Structure
 
-This is a verifiable reward environment. No LLM grader is used. The reward is deterministic, chance-corrected character-level accuracy.
+This is a verifiable reward environment. No LLM grader is used.
 
-Accuracy is computed position by position over the plaintext positions **not** covered by cribs (crib letters are given in the prompt, so they earn nothing):
+The agent submits a key. The server decrypts the ciphertext with it and counts the letters that match the hidden plaintext, over the positions not covered by cribs. With $n$ such positions and accuracy $a$:
 
-$$\text{accuracy} = \frac{\text{matching non-crib characters}}{\text{non-crib characters} + \max(0, \text{length of submission} - \text{length of ground truth})}$$
+$$\text{reward} = \text{clip}\left(\frac{a - c}{1 - c}, 0, 1\right), \quad c = p + 2\sqrt{\frac{p(1-p)}{n}}, \quad p = \frac{1}{25}$$
 
-It is then rescaled against the accuracy reachable without decrypting:
+A wrong key's output letter is never the ciphertext letter (Enigma has no fixed points) and otherwise uniform, as is the plaintext letter, so random keys match with probability $1/25$; the margin of two standard deviations makes random keys score 0. A key that decrypts the whole message correctly scores 1, including equivalent keys that differ only in settings with no effect on the decryption. Partly correct keys earn partial credit: for example the right rotor settings with some of the plugboard pairs.
 
-$$\text{reward} = \max\left(0, \frac{\text{accuracy} - c}{1 - c}\right), \quad c = \max\left(\text{rate of the commonest plaintext letter},\ \frac{\mathbb{E}[\max_{j \le 100} X_j]}{n}\right), \quad X_j \sim \text{Binomial}(n, 1/25)$$
-
-where $n$ is the number of non-crib characters. The first term is what filling every position with one letter (e.g. all `E`) scores; the second is the expected best of 100 random decryptions (Enigma never encrypts a letter to itself, so a wrong-key output letter matches the plaintext with probability 1/25), computed exactly. Guessing, copying the cribs or spending the attempt budget on random keys scores 0 (or very close to it); a perfect decryption scores 1; above $c$ the reward increases strictly with each additional correct character.
-
-The reward is computed once when the agent calls `submit`. If the agent uses its whole `try_decrypt` budget without submitting, the call that uses the last attempt ends the episode and the reward is the same score for the most accurate decryption among its attempts. Non-terminal `try_decrypt` calls never report accuracy.
+The first valid submission is scored and ends the episode. A malformed key is rejected with an error and does not end the episode. A submission after the episode has ended scores -0.1.
 
 ## Data
 
-Tasks are generated from a corpus of 60 realistic WWII-style German military messages, each encrypted with randomly assigned Enigma machine settings. Every task is verified to round-trip correctly (decrypting the ciphertext with the stored settings recovers the plaintext exactly). All cribs are verified to appear at their stated positions.
+Plaintexts are generated by a template grammar of WWII-style German military messages (weather reports, U-boat reports, orders, situation reports, logistics) in the conventions of the period: uppercase A-Z only, X for a full stop, ZZ for a comma, Q for CH, umlauts as AE/OE/UE and numbers spelled out (ZWO for 2). The German text sample in the kit is drawn from a separate seed and shares no 40-letter passage with any task plaintext. All data is synthetic.
 
 ## Tools
 
-| Tool | Parameters | Description |
-|------|-----------|-------------|
-| `try_decrypt` | `rotor_order`, `ring_settings`, `initial_positions`, `reflector`, `plugboard` | Configure an Enigma machine and decrypt the ciphertext. Returns the decrypted text for inspection. Does not score or finish the task, except for the call that uses the last attempt (see below). |
-| `submit` | `plaintext` | Submit the final decrypted plaintext for scoring. Finishes the task and returns the accuracy reward. |
-
-The agent has a maximum of 100 `try_decrypt` attempts per task. Using the last attempt finishes the episode, scored on the best attempt.
+| Tool | Description |
+|------|-------------|
+| `bash`, `read`, `write`, `edit`, `multi_edit`, `glob`, `grep`, `ls`, `todo_write` | Sandbox CLI tools, rooted at `/workspace` |
+| `submit_key` | Submit the key (`rotor_order`, `reflector`, `ring_settings`, `initial_positions`, `plugboard`); the first valid key is scored and ends the episode |
 
 ## Time Horizon
 
-Enigma Decrypt is a multi-turn environment. Easy tasks can be solved in a handful of tool calls with systematic position search. Medium and hard tasks require more strategic reasoning about Enigma properties and effective use of cribs.
+Multi-turn. The agent writes and runs search code over many tool calls; ciphertext-only levels need searches lasting minutes to hours on two CPUs.
 
 ## Environment Difficulty
 
-Easy tasks are tractable with systematic search guided by cribs. Medium tasks require understanding of Enigma mechanics to narrow the search space. Hard tasks demand genuine cryptanalytic reasoning — exploiting no-self-encryption, crib dragging, and rotor identification techniques.
+Level 1 is solvable with a simple search over start positions and ring settings guided by the crib. Levels 2 and 3 need a bombe-style menu search or crib-driven hill-climbing over all 60 rotor orders. Levels 4 and 5 need a full ciphertext-only attack (index-of-coincidence search over rotor settings followed by plugboard hill-climbing); level 5 adds a shorter message and no kit. With more plugboard pairs or shorter messages the index of coincidence at the true rotor setting no longer stands out from the best wrong settings, so ciphertext-only levels keep to at most six pairs and at least 350 letters.
 
 ## Other Environment Requirements
 
-There are no further environment requirements; Enigma Decrypt works out of the box with the OpenReward endpoint without any secrets.
+An OpenReward API key is required (`secrets["api_key"]`) to create the sandbox.
 
 ## Safety
 
-Agents in Enigma Decrypt interact only with a simulated historical cipher machine. The environment does not present safety risks — all data is synthetic (though historically informed), and the cryptographic techniques involved are of purely historical interest with no modern security implications.
+Agents interact only with a simulated historical cipher machine and synthetic messages. The cryptographic techniques involved are of historical interest and have no bearing on modern ciphers.
 
 ## Citations
 

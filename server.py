@@ -1,6 +1,6 @@
 from openreward.environments import Server
 
-from enigma import EnigmaDecrypt
+from enigma_env import EnigmaDecrypt
 
 if __name__ == "__main__":
     server = Server([EnigmaDecrypt])
