@@ -396,7 +396,7 @@ class TestGerman:
 # only together with a new task namespace.
 PINNED = {
     (1, 0): "a3d29707bbd22942", (2, 5): "0aa04622868d27da", (3, 17): "7c59b52f36f86762",
-    (4, 123): "5e4f61f5d8ce2b59", (5, 1_000_003): "9983ce6d532b205f",
+    (4, 123): "5e4f61f5d8ce2b59", (5, 1003): "7b75106bcf2466d3",
 }
 
 
@@ -471,11 +471,11 @@ class TestTasks:
                 assert len({trace[i][0] for i in span}) == 1
 
     def test_list_tasks(self):
-        train, test = EnigmaDecrypt.list_tasks("train"), EnigmaDecrypt.list_tasks("test")
-        assert len(train) == 5 * len(tasks.TRAIN_SEEDS) and len(test) == 5 * len(tasks.TEST_SEEDS)
-        assert len({t["id"] for t in train + test}) == len(train) + len(test)
-        assert not {t["seed"] for t in train} & {t["seed"] for t in test}
-        assert all(set(t) == {"id", "level", "seed"} for t in train + test)
+        train = EnigmaDecrypt.list_tasks("train")
+        assert EnigmaDecrypt.list_splits() == ["train"] and EnigmaDecrypt.list_tasks("test") == []
+        assert len(train) == 5 * len(tasks.TRAIN_SEEDS)
+        assert len({t["id"] for t in train}) == len(train)
+        assert all(set(t) == {"id", "level", "seed"} for t in train)
         assert EnigmaDecrypt.list_tasks("train") == train
 
 

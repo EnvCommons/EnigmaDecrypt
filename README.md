@@ -26,7 +26,7 @@ MIT
 
 ## Tasks
 
-Tasks are generated procedurally: each task id `L<level>-<seed>` deterministically yields a fresh plaintext, key, ciphertext and (for crib levels) cribs. The train split has seeds 0-1999 for each level (10,000 tasks); the test split has seeds 1,000,000-1,000,099 for each level (500 tasks).
+Tasks are generated procedurally: each task id `L<level>-<seed>` deterministically yields a fresh plaintext, key, ciphertext and (for crib levels) cribs. There is a single train split with seeds 0-1999 for each level (10,000 tasks).
 
 | Level | Attack | Known | Message length | Plugboard pairs | Cribs | Sandbox kit |
 |---|---|---|---|---|---|---|

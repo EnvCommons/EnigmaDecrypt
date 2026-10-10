@@ -370,7 +370,7 @@ with code 124 (e.g. your own `timeout`) is also reported as hitting the time lim
 
     @classmethod
     def list_splits(cls) -> list[str]:
-        return ["train", "test"]
+        return ["train"]
 
     @classmethod
     def list_tasks(cls, split: str) -> list[JSONObject]:
