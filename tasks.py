@@ -27,6 +27,7 @@ from enigma_machine import ALPHABET, ROTORS, EnigmaMachine
 NAMESPACE = "enigma-v1"
 REFLECTOR = "UKW-B"
 TRAIN_SEEDS = range(0, 2000)
+TEST_SEEDS = range(1_000_000, 1_000_100)
 SAMPLE_CHARS = 80_000
 SAMPLE_OVERLAP = 40
 
@@ -183,6 +184,5 @@ def task_id(level: int, seed: int) -> str:
 
 
 def list_specs(split: str) -> list:
-    if split != "train":
-        return []
-    return [{"id": task_id(level, s), "level": level, "seed": s} for level in sorted(LEVELS) for s in TRAIN_SEEDS]
+    seeds = {"train": TRAIN_SEEDS, "test": TEST_SEEDS}[split]
+    return [{"id": task_id(level, s), "level": level, "seed": s} for level in sorted(LEVELS) for s in seeds]
