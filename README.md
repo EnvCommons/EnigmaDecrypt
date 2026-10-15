@@ -26,7 +26,7 @@ MIT
 
 ## Tasks
 
-Tasks are generated procedurally: each task id `L<level>-<seed>` deterministically yields a fresh plaintext, key, ciphertext and (for crib levels) cribs. The train split has 10,000 tasks, weighted towards the levels that give the most learning signal: 1,500 at level 1, 3,000 each at levels 2 and 3, 1,500 at level 4 and 1,000 at level 5 (seeds 0 to count−1). Sampling the split uniformly therefore gives levels 1-5 15%, 30%, 30%, 15% and 10% of episodes. The test split has seeds 1,000,000-1,000,099 for each level (500 tasks).
+Tasks are generated procedurally: each task id `L<level>-<seed>` deterministically yields a fresh plaintext, key, ciphertext and (for crib levels) cribs. The train split has 10,000 tasks, weighted towards the levels that give the most learning signal: 1,500 at level 1, 3,000 each at levels 2 and 3, 1,500 at level 4 and 1,000 at level 5 (seeds 0 to count−1). The levels are interleaved through the list in these proportions, so sampling the split uniformly, or taking any contiguous run of it, gives levels 1-5 15%, 30%, 30%, 15% and 10% of episodes. The test split has seeds 1,000,000-1,000,099 for each level (500 tasks).
 
 | Level | Attack | Known | Message length | Plugboard pairs | Cribs | Sandbox kit |
 |---|---|---|---|---|---|---|

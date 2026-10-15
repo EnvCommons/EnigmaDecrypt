@@ -20,14 +20,15 @@ setting never affects the decryption there.
 import functools
 import hashlib
 import random
+from fractions import Fraction
 
 import german
 from enigma_machine import ALPHABET, ROTORS, EnigmaMachine
 
 NAMESPACE = "enigma-v1"
 REFLECTOR = "UKW-B"
-# Train tasks per level: uniform sampling over the split then gives each level
-# this share of episodes (L1 15%, L2 30%, L3 30%, L4 15%, L5 10%).
+# Train tasks per level: uniform sampling over the split (or any contiguous run of
+# it, see list_specs) then gives each level this share of episodes (L1 15%, L2 30%, L3 30%, L4 15%, L5 10%).
 TRAIN_TASKS = {1: 1500, 2: 3000, 3: 3000, 4: 1500, 5: 1000}
 TEST_SEEDS = range(1_000_000, 1_000_100)
 SAMPLE_CHARS = 80_000
@@ -186,5 +187,11 @@ def task_id(level: int, seed: int) -> str:
 
 
 def list_specs(split: str) -> list:
-    seeds = {"train": lambda level: range(TRAIN_TASKS[level]), "test": lambda level: TEST_SEEDS}[split]
-    return [{"id": task_id(level, s), "level": level, "seed": s} for level in sorted(LEVELS) for s in seeds(level)]
+    if split == "test":
+        pairs = [(level, s) for level in sorted(LEVELS) for s in TEST_SEEDS]
+    else:
+        # Spread each level evenly over the list (seed i of n sits at (2i+1)/2n), so any
+        # contiguous run of tasks, not only the whole split, carries the per-level mix.
+        pairs = sorted(((level, s) for level in sorted(LEVELS) for s in range(TRAIN_TASKS[level])),
+                       key=lambda p: (Fraction(2 * p[1] + 1, 2 * TRAIN_TASKS[p[0]]), p[0]))
+    return [{"id": task_id(level, s), "level": level, "seed": s} for level, s in pairs]
