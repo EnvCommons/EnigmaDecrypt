@@ -480,6 +480,19 @@ class TestTasks:
         assert all(set(t) == {"id", "level", "seed"} for t in train + test)
         assert EnigmaDecrypt.list_tasks("train") == train
 
+    def test_train_levels_interleaved(self):
+        # A sampler that takes a contiguous run of the split must still see the level mix.
+        levels = [t["level"] for t in EnigmaDecrypt.list_tasks("train")]
+        total = sum(tasks.TRAIN_TASKS.values())
+        for start in range(0, total - 20 + 1):
+            window = collections.Counter(levels[start:start + 20])
+            assert window == {lv: n * 20 // total for lv, n in tasks.TRAIN_TASKS.items()}
+        for size in (6, 10, 13):
+            for start in range(0, total - size + 1, 7):
+                window = collections.Counter(levels[start:start + size])
+                for lv, n in tasks.TRAIN_TASKS.items():
+                    assert abs(window[lv] - n * size / total) <= 1
+
 
 # ============================================================================
 # 4. REFERENCE SIMULATOR IN THE KIT
