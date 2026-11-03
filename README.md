@@ -1,6 +1,6 @@
 # Enigma Decrypt
 
-[![OpenReward Environment](https://img.shields.io/badge/%E2%AD%90%20OpenReward-Environment-f7e6cc)](https://openreward.ai/GeneralReasoning/enigma-decrypt)
+[![OpenReward Environment](https://img.shields.io/badge/%E2%AD%90%20OpenReward-Environment-f7e6cc)](https://openreward.ai/GeneralReasoning/EnigmaDecrypt)
 
 ## Description
 
@@ -22,11 +22,11 @@ Each session gets a sandbox (2 CPUs, 4 GB RAM, no network) with Python, numpy an
 
 ## License
 
-MIT
+[MIT](https://opensource.org/licenses/MIT).
 
 ## Tasks
 
-Tasks are generated procedurally: each task id `L<level>-<seed>` deterministically yields a fresh plaintext, key, ciphertext and (for crib levels) cribs. The train split has 10,000 tasks, weighted towards the levels that give the most learning signal: 1,500 at level 1, 3,000 each at levels 2 and 3, 1,500 at level 4 and 1,000 at level 5 (seeds 0 to count−1). The levels are interleaved through the list in these proportions, so sampling the split uniformly, or taking any contiguous run of it, gives levels 1-5 15%, 30%, 30%, 15% and 10% of episodes. The test split has seeds 1,000,000-1,000,099 for each level (500 tasks).
+Tasks are generated procedurally: each task id `L<level>-<seed>` deterministically yields a fresh plaintext, key, ciphertext and (for crib levels) cribs. The `train` split has 10,000 tasks, weighted towards the levels that give the most learning signal: 1,500 at level 1, 3,000 each at levels 2 and 3, 1,500 at level 4 and 1,000 at level 5 (seeds 0 to count−1). The levels are interleaved through the list in these proportions, so sampling the split uniformly, or taking any contiguous run of it, gives levels 1-5 15%, 30%, 30%, 15% and 10% of episodes. The `test` split has seeds 1,000,000-1,000,099 for each level (500 tasks).
 
 | Level | Attack | Known | Message length | Plugboard pairs | Cribs | Sandbox kit |
 |---|---|---|---|---|---|---|
@@ -73,7 +73,7 @@ Level 1 is solvable with a simple search over start positions and ring settings 
 
 ## Other Environment Requirements
 
-An OpenReward API key is required (`secrets["api_key"]`) to create the sandbox.
+Enigma Decrypt needs no external secrets.
 
 ## Safety
 
@@ -87,6 +87,6 @@ Agents interact only with a simulated historical cipher machine and synthetic me
   title     = {Enigma Decrypt},
   year      = {2026},
   publisher = {OpenReward},
-  url       = {https://openreward.ai/GeneralReasoning/enigma-decrypt}
+  url       = {https://openreward.ai/GeneralReasoning/EnigmaDecrypt}
 }
 ```
